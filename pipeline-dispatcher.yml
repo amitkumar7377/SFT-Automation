@@ -24,4 +24,3 @@ jobs:
     testCases:
       #Azure
      - "SFT\\HIA\\1_4_ValidateHPSignatureForHPImageAssist
-has context menu
