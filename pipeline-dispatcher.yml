@@ -3,7 +3,7 @@ resources:
   - repository: SFT-Automation
     type: githubenterprise
     endpoint: GithubEnterprise
-    name: https://github.com/amitkumar7377/SFT-Automation
+    name: amitkumar7377/SFT-Automation
     ref: kp/ZTA
  
 variables:
