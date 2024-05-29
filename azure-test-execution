@@ -1,0 +1,173 @@
+parameters:
+- name: 'testCases'
+  type: object
+- name: 'agentName'
+  type: string
+- name: 'pool'
+  type: string
+- name: 'rootId'
+  type: string
+- name: 'componentLocation'
+  type: string
+
+jobs:
+- ${{ each testCase in parameters.testcases }}:
+  - template: monitor-jobs.yml
+    parameters:
+      testCase: ${{ testCase }}
+      testCases: ${{ parameters.testcases }}
+      pool: ${{ parameters.pool }}
+- job: TestExecution
+  displayName: Initiate Test Execution
+  pool:
+    name: ${{ parameters.pool }}
+  steps: 
+  - checkout: self
+    clean: true
+  - checkout: SFT-Automation
+    clean: true
+    lfs: true
+    continueOnError: false
+  - task: CopyFiles@2
+    displayName: 'Copy scripts to working directory'
+    inputs:
+      SourceFolder: '$(Agent.BuildDirectory)\s\ZTA\ZTA_Nonvcosmos\Scripts'
+      Contents: '**'
+      TargetFolder: 'C:\Sft_$(Build.BuildId)_$(Build.BuildNumber)'
+      CleanTargetFolder: true
+  - task: CopyFiles@2
+    displayName: 'Copy files to working directory'
+    inputs:
+      SourceFolder: '$(Agent.BuildDirectory)\s\SFT-Automation'
+      Contents: '**'
+      TargetFolder: 'C:\Sft_$(Build.BuildId)_$(Build.BuildNumber)'
+      CleanTargetFolder: false
+  - task: DownloadSecureFile@1
+    inputs:
+      secureFile: 'id_rsa'
+  - task: CopyFiles@2
+    displayName: 'Copy keys'
+    inputs:
+      SourceFolder: '$(Agent.TempDirectory)'
+      Contents: id_rsa
+      TargetFolder: 'c:\'
+      OverWrite: true
+  - task: CmdLine@2
+    displayName: Create testData.json to transfer files
+    inputs:
+      script: 'echo { "buildId" : "$(Build.BuildId)", "buildNumber" : "$(Build.BuildNumber)", "uutIp" : "$(UUT_IP)", "uutUserName": "$(UUT_UserName)", "vpnIp": "$(VPN_IP)", "vpnUserName" : "$(VPN_UserName)", "rootId": "${{ parameters.rootId }}", "componentLocation": "${{ parameters.componentLocation }}", "pat": "$(PAT)", "totalTestCases" : "${{ length(parameters.testCases) }}" } > C:\Sft_$(Build.BuildId)_$(Build.BuildNumber)\testData.json"'
+  - task: CmdLine@2
+    displayName: 'Download pulsar components'
+    condition: ne('${{ parameters.rootId }}', '')
+    inputs:
+      script: 'py C:\Sft_$(Build.BuildId)_$(Build.BuildNumber)\send_pulsar_components_ssh.py'
+      workingDirectory: 'C:\Sft_$(Build.BuildId)_$(Build.BuildNumber)'
+  - task: CmdLine@2
+    displayName: 'Download component from network share'
+    condition: |
+      and(
+        eq('${{ parameters.rootId }}', ''),
+        ne('${{ parameters.componentLocation }}', '')
+      )
+    inputs:
+      script: 'py C:\Sft_$(Build.BuildId)_$(Build.BuildNumber)\send_network_share_component_ssh.py'
+      workingDirectory: 'C:\Sft_$(Build.BuildId)_$(Build.BuildNumber)'
+  - task: PythonScript@0
+    displayName: 'Install vcodev'
+    inputs:
+      scriptPath: 'C:\Sft_$(Build.BuildId)_$(Build.BuildNumber)\Vcodev_Install.py'
+      arguments: 'C:\Sft_$(Build.BuildId)_$(Build.BuildNumber)'
+  - powershell: |   
+      $jobId = ""
+      $taskId = ""
+      $planId = "$(system.PlanId)"
+      $buildId = "$(Build.BuildId)"
+      $projectId = "$(System.TeamProjectId)"
+      $systemUri = "$(System.CollectionUri)"
+      $url = "$($systemUri)$($projectId)/_apis/build/builds/$($buildId)/Timeline"
+  
+      $B64Pat = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes("`:$(PAT)"))
+
+      $headers = @{
+          "Authorization" = "Basic $B64Pat"
+          "Content-Type" = "application/json"
+      }
+
+      $testCasesArrstr= @"
+      ${{ convertToJson(parameters.testCases) }}
+      "@
+      $testCasesArr = ConvertFrom-Json $testCasesArrstr
+      $testCaseIndex = 0
+      New-Item -Path "C:\Sft_$(Build.BuildId)_$(Build.BuildNumber)\TestCases" -ItemType Directory -Force -ErrorAction SilentlyContinue
+      
+      $testCaseJsonPath = "C:\Sft_$(Build.BuildId)_$(Build.BuildNumber)\testCases.json"  
+      echo  "{ ""testCases"" : "${testCasesArrstr}", ""totalTestCases"" : ""${{ length(parameters.testCases) }}"" }" > $testCaseJsonPath
+      $jsonContent = Get-Content -Path $testCaseJsonPath
+      $jsonContent | Out-File -FilePath $testCaseJsonPath -Encoding ASCII
+       
+      foreach ($testCase in $testCasesArr)
+      { 
+        $testCaseIndex += 1
+        $callbackDataFilePath = "C:\Sft_$(Build.BuildId)_$(Build.BuildNumber)\TestCases\callbackData_${testCaseIndex}.json"
+        $maxRetries = 15
+        $retryCount = 0
+     
+        do {
+            
+            $response = Invoke-RestMethod -Uri $url -Method GET -Headers $headers
+            
+            $testCaseName = $testCase.Split("\\")[2]
+
+            foreach ($record in $response.records) {
+                if ($record.type -eq "Job" -and $record.name -eq "MonitorJob_${testCaseName}") {
+                    $jobId = $record.id
+                }
+                elseif ($record.type -eq "Task" -and $record.name -eq "MonitorTask_${testCaseName}") {
+                    $taskId = $record.id
+                }
+            }
+            if ($jobId -ne "" -and $taskId -ne "") {
+                break
+            }
+            $retryCount++
+            Start-Sleep -Seconds 15
+        }
+        while ($retryCount -lt $maxRetries)
+        
+        echo  "{ ""collectionUri"" : ""${systemUri}"", ""teamProjectId"" : ""${projectId}"", ""hubName"" : ""$(system.HostType)"", ""planId"" : ""${planId}"", ""jobId"" : ""${jobId}"", ""timelineId"" : ""$(system.TimelineId)"", ""taskInstanceId"" : ""${taskId}"", ""buildId"" : ""${buildId}"" }" > $callbackDataFilePath
+      }
+      
+    displayName: 'Prepare data for test execution status update'
+    retryCountOnTaskFailure: 10
+  - ${{ each testCase in parameters.testcases }}:
+    - task: CmdLine@2
+      displayName: Execute vvv pack for ${{ testCase }}
+      inputs:         
+        script: vd -vvv pack C:\Sft_$(Build.BuildId)_$(Build.BuildNumber)\test-case\${{ testCase }}
+        workingDirectory: C:\Sft_$(Build.BuildId)_$(Build.BuildNumber)
+    - task: ExtractFiles@1
+      displayName: 'Extract files from ${{ testCase }} '
+      inputs:
+        archiveFilePatterns: C:\Sft_$(Build.BuildId)_$(Build.BuildNumber)\*${{ split(testCase, '\')[2] }}*.zip
+        destinationFolder: C:\Sft_$(Build.BuildId)_$(Build.BuildNumber)\${{ split(testCase, '\')[2] }}
+        cleanDestinationFolder: false
+    - powershell: |
+        $sourceFolder = "C:\Sft_$(Build.BuildId)_$(Build.BuildNumber)\library"
+        $destinationFolder = "C:\Sft_$(Build.BuildId)_$(Build.BuildNumber)\${{ split(testCase, '\')[2] }}"
+        Copy-Item -Path $sourceFolder\* -Destination $destinationFolder -Recurse -Force
+        if (!(Test-Path -Path C:\Sft_$(Build.BuildId)_$(Build.BuildNumber)\TestCases -PathType Container)) {
+          New-Item -ItemType Directory -Path C:\Sft_$(Build.BuildId)_$(Build.BuildNumber)\TestCases -Force
+        }
+      displayName: Copy libraries
+      continueOnError: False
+    - task: ArchiveFiles@2
+      displayName: 'Create test package ${{ testCase }}'
+      inputs:
+        rootFolderOrFile: C:\Sft_$(Build.BuildId)_$(Build.BuildNumber)\${{ split(testCase, '\')[2] }} 
+        includeRootFolder: false 
+        archiveFile: C:\Sft_$(Build.BuildId)_$(Build.BuildNumber)\TestCases\${{ split(testCase, '\')[2] }}
+  - task: CmdLine@2
+    displayName: 'Start test'
+    inputs:
+      script: 'py C:\Sft_$(Build.BuildId)_$(Build.BuildNumber)\send_test_packages_ssh.py'
+      workingDirectory: 'C:\Sft_$(Build.BuildId)_$(Build.BuildNumber)'
