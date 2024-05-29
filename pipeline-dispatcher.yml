@@ -22,6 +22,6 @@ jobs:
     componentLocation: '' #'\\\\houcomfile02.auth.hpicorp.net\\PreRelease\\Manageability\\HPIA\\ImagePal-5.1.0.1'
     testExecutionType: 'Azure'
     testCases:
-      #Azure
+      Azure
      - "SFT\\HIA\\1_4_ValidateHPSignatureForHPImageAssist
 
