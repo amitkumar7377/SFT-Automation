@@ -1,0 +1,27 @@
+resources:
+  repositories:
+  - repository: SFT-Automation
+    type: githubenterprise
+    endpoint: GithubEnterprise
+    name: https://github.com/amitkumar7377/SFT-Automation
+    ref: kp/ZTA
+ 
+variables:
+- group: ZTA
+ 
+trigger: none
+ 
+ 
+jobs:
+- template: pipeline-dispatcher.yml
+  parameters:
+    serialNumber: "00037705BK"
+    agentName: 'ZTA_Agent_74'
+    pool: "$(poolName)"
+    rootId: ''
+    componentLocation: '' #'\\\\houcomfile02.auth.hpicorp.net\\PreRelease\\Manageability\\HPIA\\ImagePal-5.1.0.1'
+    testExecutionType: 'Azure'
+    testCases:
+      #Azure
+     - "SFT\\HIA\\1_4_ValidateHPSignatureForHPImageAssist
+has context menu
