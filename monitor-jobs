@@ -1,0 +1,62 @@
+parameters:
+- name: 'testCase'
+  type: string
+  default: ""
+- name: 'testCases'
+  type: object
+- name: 'pool'
+  type: string
+
+jobs:
+- job: MonitorJob_${{ split(parameters.testCase, '\')[2] }}
+  #displayName: Monitor test execution of _${{ split(parameters.testCase, '\')[2] }}
+  timeoutInMinutes: $[ variables['TimeoutInMins'] ]
+  pool: server
+  steps:
+  - task: InvokeRESTAPI@1
+    name: MonitorTask_${{ split(parameters.testCase, '\')[2] }}
+    retryCountOnTaskFailure: 10
+    inputs:
+      connectionType: 'connectedServiceName'
+      serviceConnection: 'SFT_Generic_Service1'
+      method: 'GET'
+      headers: |
+        {
+        "Content-Type":"application/json", 
+        }
+      waitForCompletion: 'true'
+
+- job: PublishLogs_${{ split(parameters.testCase, '\')[2] }}
+  pool:
+    name: ${{ parameters.pool }}
+  displayName: Publish logs of ${{ split(parameters.testCase, '\')[2] }}
+  dependsOn: MonitorJob_${{ split(parameters.testCase, '\')[2] }}
+  variables:
+    testCaseName: ${{ split(parameters.testCase, '\')[2] }}  
+  steps:
+  - checkout: none
+  - powershell: |   
+      $testCasesArrstr= @"
+      ${{ convertToJson(parameters.testCases) }}
+      "@
+      $testCase = "${{ parameters.testCase }}"
+      Write-Host $testCasesArrstr, $testCase
+      $testCase = $testCase.replace("\", "\\")
+      Write-Host $testCasesArrstr, $testCase
+      $testCaseJsonPath = "C:\Sft_$(Build.BuildId)_$(Build.BuildNumber)\testCases.json"  
+      echo  "{ ""testCases"" : "${testCasesArrstr}", ""testCase"" : ""${testCase}"", ""totalTestCases"" : ""${{ length(parameters.testCases) }}"" }" > $testCaseJsonPath
+      $jsonContent = Get-Content -Path $testCaseJsonPath
+      $jsonContent | Out-File -FilePath $testCaseJsonPath -Encoding ASCII
+    displayName: 'testCases data for logs'
+    retryCountOnTaskFailure: 10
+  - task: CmdLine@2
+    displayName: 'Package logs of ${{ parameters.testCase }}'
+    inputs:
+      script: 'py C:\Sft_$(Build.BuildId)_$(Build.BuildNumber)\get_logs.py'
+      workingDirectory: 'C:\Sft_$(Build.BuildId)_$(Build.BuildNumber)'
+  - task: PublishPipelineArtifact@1
+    displayName: 'Publish $(testCaseName) logs to pipeline'
+    inputs:
+      targetPath: 'C:\Sft_$(Build.BuildId)_$(Build.BuildNumber)\logs\$(testCaseName)_$(Build.BuildId)_$(Build.BuildNumber).zip'
+      artifact: TestCase_${{ split(parameters.testCase, '\')[2] }}_Logs
+      publishLocation: 'pipeline'
